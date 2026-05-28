@@ -1,0 +1,13 @@
+{
+  "model_type": "svm",
+  "model_family": "traditional",
+  "best_params": {
+    "C": 10.0,
+    "loss": "hinge"
+  },
+  "test_f1_macro": 0.6329245425676697,
+  "test_f1_bearish": 0.48,
+  "test_f1_bullish": 0.5735294117647058,
+  "test_f1_neutral": 0.8452442159383033,
+  "timestamp": "2026-05-28T20:06:57.097748"
+}

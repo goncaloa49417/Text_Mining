@@ -1,0 +1,11 @@
+{
+  "model_type": "distilbert",
+  "model_family": "transformer",
+  "use_finbert": false,
+  "model_name": "distilbert-base-uncased",
+  "test_f1_macro": 0.804369946611077,
+  "test_f1_bearish": 0.7317073170731707,
+  "test_f1_bullish": 0.7771639042357275,
+  "test_f1_neutral": 0.9042386185243328,
+  "timestamp": "2026-05-28T22:28:49.282062"
+}
