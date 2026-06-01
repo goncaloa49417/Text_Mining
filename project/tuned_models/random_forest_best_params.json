@@ -1,38 +1,10 @@
 {
   "model_type": "random_forest",
-  "best_params": {
-    "class_weight": "balanced_subsample",
-    "criterion": "gini",
-    "max_depth": null,
-    "max_features": "log2",
-    "min_samples_leaf": 1,
-    "min_samples_split": 10,
-    "n_estimators": 700
+  "metrics": {
+    "macro_f1": 0.5935056305590202,
+    "bearish_f1": 0.3591331269349845,
+    "bullish_f1": 0.5765472312703583,
+    "neutral_f1": 0.8448365334717177
   },
-  "tuned_parameters": {
-    "bootstrap": true,
-    "ccp_alpha": 0.0,
-    "class_weight": "balanced_subsample",
-    "criterion": "gini",
-    "max_depth": null,
-    "max_features": "log2",
-    "max_leaf_nodes": null,
-    "max_samples": null,
-    "min_impurity_decrease": 0.0,
-    "min_samples_leaf": 1,
-    "min_samples_split": 10,
-    "min_weight_fraction_leaf": 0.0,
-    "monotonic_cst": null,
-    "n_estimators": 700,
-    "n_jobs": null,
-    "oob_score": false,
-    "random_state": 42,
-    "verbose": 0,
-    "warm_start": false
-  },
-  "test_f1_macro": 0.7201287581356413,
-  "test_f1_bearish": 0.6016260162601627,
-  "test_f1_bullish": 0.6753246753246753,
-  "test_f1_neutral": 0.8834355828220859,
-  "timestamp": "2026-05-11T06:23:49.487345"
+  "timestamp": "2026-05-31T20:51:20.993710"
 }
