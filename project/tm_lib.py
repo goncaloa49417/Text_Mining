@@ -84,7 +84,9 @@ from transformers import (
     RobertaForSequenceClassification,
     TrainingArguments,
     Trainer,
-    EarlyStoppingCallback
+    EarlyStoppingCallback,
+    T5Tokenizer,
+    T5ForConditionalGeneration
 )
 
 
@@ -173,7 +175,24 @@ FINANCIAL_STOPWORDS.update(FINANCIAL_STOPWORDS)
 
 class FinancialTextPreprocessor(BaseEstimator, TransformerMixin):
     """
-    Financial text preprocessor with sentiment-critical word preservation
+    Financial text preprocessor with sentiment-critical word preservation.
+    Inherits from scikit-learn's BaseEstimator and TransformerMixin.
+    Applies a preprocessing pipeline that includes:
+    - Lowercasing
+    - Preserving sentiment indicators (symbols to special tokens)
+    - Expanding contractions using CONTRACTIONS dictionary
+    - Processing stock tickers (keep as 'STICKER_{TICKER}' or 'STOCK_TICKER')
+    - Conditional number handling (keep percentages and dollar amounts with context)
+    - Removing noise (URLs, mentions, punctuation)
+    - Tokenization using TweetTokenizer
+    - Removing stopwords but preserving sentiment-critical words
+    - Handling negations (adding NOT_ prefix to words following negation words)
+    - Lemmatization using WordNetLemmatizer, preserving directional words even if they look like stopwords
+    - Optional stemming using PorterStemmer (applied after lemmatization to minimize loss of meaning). It will stem words like "rising" to "rise" but will not stem "up" or "down" since they are preserved as critical words.
+
+    Returns:
+    --------
+    Preprocessed text as a single string (tokens joined by space)
     """
     
     def __init__(self, use_stemming=False, preserve_directional=True):
@@ -353,7 +372,7 @@ class FinancialTextPreprocessor(BaseEstimator, TransformerMixin):
 class StratifiedKFoldTrainer:
     """
     Complete training pipeline with StratifiedKFold + Class Weights
-    Integrates with your FinancialTextPreprocessor
+    Integrates with FinancialTextPreprocessor
     """
     
     def __init__(self, n_splits=5, weight_strategy='balanced', random_state=42):
@@ -402,7 +421,11 @@ class StratifiedKFoldTrainer:
         vectorizer : sklearn vectorizer
             Converts text to features (default: TfidfVectorizer)
         """
-        
+
+        # DecoderClassifier handles its own training loop and does not use the standard preprocessor/vectorizer pipeline
+        if isinstance(model, DecoderClassifier):
+            return self._train_decoder(texts, labels, model)
+    
         # Set defaults if not provided
         if model is None:
             model = LogisticRegression(max_iter=1000, random_state=self.random_state)
@@ -502,6 +525,72 @@ class StratifiedKFoldTrainer:
             })
         
         # Aggregate results
+        self._print_summary()
+        return self.fold_results
+    
+    def _train_decoder(self, texts, labels, model):
+        """
+        Stratified K-Fold loop for DecoderClassifier.
+        No vectorizer or preprocessor. Raw text goes straight to the model.
+        """
+        texts  = np.array(texts)
+        labels = np.array(labels)
+
+        print(f"{'='*60}")
+        print(f"STRATIFIED {self.n_splits}-FOLD CV  —  DecoderClassifier")
+        print(f"{'='*60}")
+        print(f"Total samples : {len(texts)}")
+        print(f"Class dist.   : {np.bincount(labels)}")
+        print(f"Model         : {model.model_name}")
+        print(f"{'='*60}\n")
+
+        for fold, (train_idx, val_idx) in enumerate(self.skf.split(texts, labels)):
+            print(f"\n{'─'*50}")
+            print(f"FOLD {fold + 1}/{self.n_splits}")
+            print(f"{'─'*50}")
+
+            X_train_raw = texts[train_idx].tolist()
+            X_val_raw   = texts[val_idx].tolist()
+            y_train     = labels[train_idx]
+            y_val       = labels[val_idx]
+
+            print(f"Train dist: {np.bincount(y_train)}")
+            print(f"Val   dist: {np.bincount(y_val)}")
+
+            fold_model = DecoderClassifier(
+                model_name        = model.model_name,
+                max_input_length  = model.max_input_length,
+                max_target_length = model.max_target_length,
+                batch_size        = model.batch_size,
+                learning_rate     = model.learning_rate,
+            )
+
+            fold_model.fit(X_train_raw, y_train.tolist(),
+                        val_texts=X_val_raw, val_labels=y_val.tolist())
+
+            y_pred    = fold_model.predict(X_val_raw)
+            f1_macro  = f1_score(y_val, y_pred, average='macro')
+            f1_weighted = f1_score(y_val, y_pred, average='weighted')
+            f1_per_class = f1_score(y_val, y_pred, average=None)
+
+            print(f"\nFold {fold + 1} Results:")
+            print(f"  Macro F1   : {f1_macro:.4f}")
+            print(f"  Weighted F1: {f1_weighted:.4f}")
+            print(classification_report(y_val, y_pred,
+                                        target_names=['bearish', 'bullish', 'neutral']))
+
+            self.fold_results.append({
+                'fold'        : fold,
+                'model'       : fold_model,
+                'preprocessor': None,
+                'vectorizer'  : None,
+                'f1_macro'    : f1_macro,
+                'f1_weighted' : f1_weighted,
+                'f1_per_class': f1_per_class,
+                'y_true'      : y_val,
+                'y_pred'      : y_pred,
+            })
+
         self._print_summary()
         return self.fold_results
     
@@ -1188,49 +1277,299 @@ class TransformerClassifier:
 
         return np.vstack(all_probs)  
               
+class DecoderClassifier:
+    """
+    Decoder-based classifier using FLAN-T5 (seq2seq) for financial sentiment.
+
+    Frames classification as text generation:
+        Input : "classify sentiment: $AAPL upgraded to buy..."
+        Output: "bullish"/"bearish"/"neutral"
+
+    Compatible with ModelBundle (use is_decoder=True).
+    """
+
+    LABEL2TEXT = {0: 'bearish', 1: 'bullish', 2: 'neutral'}
+    TEXT2LABEL = {'bearish': 0, 'bullish': 1, 'neutral': 2}
+
+    def __init__(
+        self,
+        model_name       : str   = 'google/flan-t5-small',
+        max_input_length : int   = 128,
+        max_target_length: int   = 8,
+        batch_size       : int   = 8,
+        learning_rate    : float = 3e-4,
+        device           : Optional[str] = None,
+    ):
+        self.model_name          = model_name
+        self.max_input_length    = max_input_length
+        self.max_target_length   = max_target_length
+        self.batch_size          = batch_size
+        self.learning_rate       = learning_rate
+        self.device = torch.device(
+            device if device else ('cuda' if torch.cuda.is_available() else 'cpu')
+        )
+        self.is_fitted = False
+
+        print(f"DecoderClassifier - model : {self.model_name}")
+        print(f"DecoderClassifier - device: {self.device}")
+
+        self.tokenizer = T5Tokenizer.from_pretrained(self.model_name)
+        self.model     = T5ForConditionalGeneration.from_pretrained(
+            self.model_name
+        ).to(self.device)
+
+    def get_params(self, deep=True):
+        return {
+            'model_name'       : self.model_name,
+            'max_input_length' : self.max_input_length,
+            'max_target_length': self.max_target_length,
+            'batch_size'       : self.batch_size,
+            'learning_rate'    : self.learning_rate,
+        }
+
+    def fine_tune(
+        self,
+        train_texts : List[str],
+        train_labels: List[int],
+        val_texts   : Optional[List[str]] = None,
+        val_labels  : Optional[List[int]] = None,
+        epochs      : int = 3,
+        **kwargs,
+    ):
+        """Alias for fit() so callers can treat this like TransformerClassifier."""
+        return self.fit(train_texts, train_labels, val_texts, val_labels, epochs)
+
+    class _Seq2SeqDataset(Dataset):
+        def __init__(self, input_encodings, target_encodings):
+            self.input_encodings  = input_encodings
+            self.target_encodings = target_encodings
+
+        def __len__(self):
+            return self.input_encodings['input_ids'].shape[0]
+
+        def __getitem__(self, idx):
+            labels = self.target_encodings['input_ids'][idx].clone()
+            labels[labels == 0] = -100
+            return {
+                'input_ids'     : self.input_encodings['input_ids'][idx],
+                'attention_mask': self.input_encodings['attention_mask'][idx],
+                'labels'        : labels,
+            }
+
+    def _format_inputs(self, texts: List[str]) -> List[str]:
+        return [f"classify sentiment: {t}" for t in texts]
+
+    def _encode_inputs(self, texts: List[str]):
+        return self.tokenizer(
+            self._format_inputs(texts),
+            truncation=True, padding=True,
+            max_length=self.max_input_length,
+            return_tensors='pt',
+        )
+
+    def _encode_labels(self, labels: List[int]):
+        label_texts = [self.LABEL2TEXT[l] for l in labels]
+        return self.tokenizer(
+            label_texts,
+            truncation=True, padding=True,
+            max_length=self.max_target_length,
+            return_tensors='pt',
+        )
+
+    def fit(
+        self,
+        train_texts : List[str],
+        train_labels: List[int],
+        val_texts   : Optional[List[str]] = None,
+        val_labels  : Optional[List[int]] = None,
+        epochs      : int = 3,
+    ):
+        print(f"\nFine-tuning {self.model_name} for {epochs} epoch(s)...")
+
+        train_ds     = self._Seq2SeqDataset(
+            self._encode_inputs(train_texts),
+            self._encode_labels(train_labels),
+        )
+        train_loader = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True)
+
+        val_loader = None
+        if val_texts is not None and val_labels is not None:
+            val_ds     = self._Seq2SeqDataset(
+                self._encode_inputs(val_texts),
+                self._encode_labels(val_labels),
+            )
+            val_loader = DataLoader(val_ds, batch_size=self.batch_size)
+
+        optimizer           = torch.optim.AdamW(self.model.parameters(), lr=self.learning_rate)
+        best_f1, best_state = 0.0, None
+
+        for epoch in range(1, epochs + 1):
+            self.model.train()
+            total_loss = 0.0
+
+            for batch in train_loader:
+                input_ids      = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                labels         = batch['labels'].to(self.device)
+
+                optimizer.zero_grad()
+                loss = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                ).loss
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                optimizer.step()
+                total_loss += loss.item()
+
+            avg_loss = total_loss / len(train_loader)
+
+            if val_loader:
+                val_preds = self._generate_predictions(val_texts)
+                macro_f1  = f1_score(val_labels, val_preds, average='macro')
+                print(f"Epoch {epoch}/{epochs} — Loss: {avg_loss:.4f} | Val Macro F1: {macro_f1:.4f}")
+
+                if macro_f1 > best_f1:
+                    best_f1    = macro_f1
+                    best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+                    print(f"  New best model (F1={best_f1:.4f})")
+            else:
+                print(f"Epoch {epoch}/{epochs} — Loss: {avg_loss:.4f}")
+
+        if best_state:
+            self.model.load_state_dict(best_state)
+            print(f"\nRestored best checkpoint (Val Macro F1: {best_f1:.4f})")
+
+        self.is_fitted = True
+        return self
+
+    def _generate_predictions(self, texts: List[str]) -> List[int]:
+        self.model.eval()
+        all_preds = []
+
+        for i in range(0, len(texts), self.batch_size):
+            batch_texts = texts[i : i + self.batch_size]
+            inputs = self.tokenizer(
+                self._format_inputs(batch_texts),
+                truncation=True, padding=True,
+                max_length=self.max_input_length,
+                return_tensors='pt',
+            ).to(self.device)
+
+            with torch.no_grad():
+                generated = self.model.generate(
+                    input_ids      = inputs['input_ids'],
+                    attention_mask = inputs['attention_mask'],
+                    max_new_tokens = self.max_target_length,
+                )
+
+            decoded = self.tokenizer.batch_decode(generated, skip_special_tokens=True)
+            for token in decoded:
+                all_preds.append(self.TEXT2LABEL.get(token.strip().lower(), 2))
+
+        return all_preds
+
+    def predict(self, texts: List[str]) -> np.ndarray:
+        if not self.is_fitted:
+            raise ValueError("Call fit() before predict().")
+        return np.array(self._generate_predictions(texts))
+
+    def predict_proba(self, texts: List[str]) -> np.ndarray:
+        if not self.is_fitted:
+            raise ValueError("Call fit() before predict_proba().")
+
+        self.model.eval()
+
+        label_token_ids = [
+            self.tokenizer(self.LABEL2TEXT[i], return_tensors='pt').input_ids[0, 0]
+            for i in range(3)
+        ]
+        all_probs = []
+
+        for i in range(0, len(texts), self.batch_size):
+            batch_texts = texts[i : i + self.batch_size]
+            inputs = self.tokenizer(
+                self._format_inputs(batch_texts),
+                truncation=True, padding=True,
+                max_length=self.max_input_length,
+                return_tensors='pt',
+            ).to(self.device)
+
+            decoder_input_ids = torch.full(
+                (len(batch_texts), 1),
+                self.model.config.decoder_start_token_id,
+                dtype=torch.long,
+                device=self.device,
+            )
+
+            with torch.no_grad():
+                logits = self.model(
+                    **inputs,
+                    decoder_input_ids=decoder_input_ids,
+                ).logits[:, 0, :]
+
+                label_logits = torch.stack(
+                    [logits[:, tid] for tid in label_token_ids], dim=1
+                )
+                probs = torch.softmax(label_logits, dim=1)
+
+            all_probs.append(probs.cpu().numpy())
+
+        return np.vstack(all_probs)
+
+    def save(self, path: str):
+        with open(path, 'wb') as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def load(path: str) -> 'DecoderClassifier':
+        with open(path, 'rb') as f:
+            return pickle.load(f)
 
 class ModelBundle:
     """
-    Unified wrapper for:
-    - preprocessing
-    - feature extraction
-    - trained model
+    Unified wrapper for preprocessing + feature extraction + trained model.
+
+    Flags:
+        is_transformer : True for encoder fine-tuned models (BERT, DistilBERT, FinBERT)
+        is_decoder     : True for seq2seq model (FLAN-T5 via DecoderClassifier)
+    Both flags cause predict_proba() to call model.predict_proba(texts) directly,
+    skipping the preprocessor and vectorizer steps.
     """
 
-    def __init__(self, model, preprocessor=None, vectorizer=None, is_transformer=False):
-        self.model = model
-        self.preprocessor = preprocessor
-        self.vectorizer = vectorizer
+    def __init__(
+        self,
+        model,
+        preprocessor   = None,
+        vectorizer     = None,
+        is_transformer : bool = False,
+        is_decoder     : bool = False,
+    ):
+        self.model          = model
+        self.preprocessor   = preprocessor
+        self.vectorizer     = vectorizer
         self.is_transformer = is_transformer
+        self.is_decoder     = is_decoder
 
-    # prediction
     def predict(self, texts):
         return np.argmax(self.predict_proba(texts), axis=1)
 
     def predict_proba(self, texts):
-
-        # transformer pipeline
-        if self.is_transformer:
+        if self.is_transformer or self.is_decoder:
             return self.model.predict_proba(texts)
 
-        # traditional ml pipeline
+        # Traditional ML pipeline
         if self.preprocessor:
             texts = self.preprocessor.transform(texts)
-
-        if self.vectorizer:
-            X = self.vectorizer.transform(texts)
-        else:
-            X = texts
-
+        X = self.vectorizer.transform(texts) if self.vectorizer else texts
         return self.model.predict_proba(X)
 
-    # save / load
     def save(self, path):
-        with open(path, "wb") as f:
+        with open(path, 'wb') as f:
             pickle.dump(self, f)
 
     @staticmethod
     def load(filepath):
         with open(filepath, 'rb') as f:
-            bundle = pickle.load(f)        
-        return bundle
+            return pickle.load(f)

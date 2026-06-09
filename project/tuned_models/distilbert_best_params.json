@@ -1,11 +1,10 @@
 {
   "model_type": "distilbert",
-  "model_family": "transformer",
-  "use_finbert": false,
-  "model_name": "distilbert-base-uncased",
-  "test_f1_macro": 0.804369946611077,
-  "test_f1_bearish": 0.7317073170731707,
-  "test_f1_bullish": 0.7771639042357275,
-  "test_f1_neutral": 0.9042386185243328,
-  "timestamp": "2026-05-28T22:28:49.282062"
+  "metrics": {
+    "macro_f1": 0.8020429374909724,
+    "bearish_f1": 0.7334851936218679,
+    "bullish_f1": 0.7720588235294118,
+    "neutral_f1": 0.9005847953216374
+  },
+  "timestamp": "2026-06-09T21:28:54.886472"
 }

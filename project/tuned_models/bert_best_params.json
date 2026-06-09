@@ -1,11 +1,10 @@
 {
   "model_type": "bert",
-  "model_family": "transformer",
-  "use_finbert": false,
-  "model_name": "google-bert/bert-base-uncased",
-  "test_f1_macro": 0.804613546855474,
-  "test_f1_bearish": 0.7336244541484717,
-  "test_f1_bullish": 0.7871621621621622,
-  "test_f1_neutral": 0.8930540242557883,
-  "timestamp": "2026-05-28T21:58:54.773083"
+  "metrics": {
+    "macro_f1": 0.8201422576579885,
+    "bearish_f1": 0.7412008281573499,
+    "bullish_f1": 0.8209764918625678,
+    "neutral_f1": 0.8982494529540481
+  },
+  "timestamp": "2026-06-09T20:52:18.679701"
 }
