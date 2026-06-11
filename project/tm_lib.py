@@ -1313,6 +1313,7 @@ class DecoderClassifier:
         print(f"DecoderClassifier - model : {self.model_name}")
         print(f"DecoderClassifier - device: {self.device}")
 
+        # Load tokenizer and model
         self.tokenizer = T5Tokenizer.from_pretrained(self.model_name)
         self.model     = T5ForConditionalGeneration.from_pretrained(
             self.model_name
@@ -1336,9 +1337,10 @@ class DecoderClassifier:
         epochs      : int = 3,
         **kwargs,
     ):
-        """Alias for fit() so callers can treat this like TransformerClassifier."""
+        # Alias for fit() so callers can treat this like TransformerClassifier.
         return self.fit(train_texts, train_labels, val_texts, val_labels, epochs)
 
+    # Internal dataset class for seq2seq fine-tuning
     class _Seq2SeqDataset(Dataset):
         def __init__(self, input_encodings, target_encodings):
             self.input_encodings  = input_encodings
@@ -1355,10 +1357,11 @@ class DecoderClassifier:
                 'attention_mask': self.input_encodings['attention_mask'][idx],
                 'labels'        : labels,
             }
-
+        
     def _format_inputs(self, texts: List[str]) -> List[str]:
         return [f"classify sentiment: {t}" for t in texts]
 
+    # Tokenize inputs for seq2seq fine-tuning
     def _encode_inputs(self, texts: List[str]):
         return self.tokenizer(
             self._format_inputs(texts),
@@ -1367,6 +1370,7 @@ class DecoderClassifier:
             return_tensors='pt',
         )
 
+    # Encode labels as text and tokenize for seq2seq training
     def _encode_labels(self, labels: List[int]):
         label_texts = [self.LABEL2TEXT[l] for l in labels]
         return self.tokenizer(
@@ -1393,6 +1397,7 @@ class DecoderClassifier:
         train_loader = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True)
 
         val_loader = None
+
         if val_texts is not None and val_labels is not None:
             val_ds     = self._Seq2SeqDataset(
                 self._encode_inputs(val_texts),
@@ -1407,6 +1412,7 @@ class DecoderClassifier:
             self.model.train()
             total_loss = 0.0
 
+            # We feed input and target together for seq2seq training
             for batch in train_loader:
                 input_ids      = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
