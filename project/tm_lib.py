@@ -79,9 +79,12 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import (
     AutoTokenizer,
     AutoModel,
+    AutoConfig,
     AutoModelForSequenceClassification,
     BertForSequenceClassification,
-    RobertaForSequenceClassification,
+    BertConfig,
+    BertModel,
+    BertTokenizer,
     TrainingArguments,
     Trainer,
     EarlyStoppingCallback,
@@ -1031,13 +1034,14 @@ class TransformerClassifier:
     def __init__(
         self,
         model_name: Optional[str] = None,
-        use_finbert : bool = True,
+        tokenizer_name: Optional[str] = None,
         num_labels  : int  = 3,
         max_length  : int  = 128,
         batch_size  : int  = 16,
-        learning_rate: float = 2e-5,
+        learning_rate: float = 2e-5
     ):
         self.model_name    = model_name
+        self.tokenizer_name = tokenizer_name or model_name
         self.num_labels    = num_labels
         self.max_length    = max_length
         self.batch_size    = batch_size
@@ -1047,19 +1051,46 @@ class TransformerClassifier:
         self.class_weights = None
 
         print(f"Model : {self.model_name}")
+        print(f"Tokenizer: {self.tokenizer_name}")
         print(f"Device: {self.device}")
 
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name, use_fast=True)
+        except Exception:
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name, use_fast=False)
+            except Exception as e_tok:
+                print(f"[WARN] AutoTokenizer failed: {e_tok}")
+                print("[INFO] Falling back to BertTokenizer('bert-base-uncased').")
+                self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
-        # Base encoder — used for feature extraction
-        self._encoder = AutoModel.from_pretrained(self.model_name).to(self.device)
+        try:
+            self._encoder = AutoModel.from_pretrained(self.model_name).to(self.device)
+            self._classifier = AutoModelForSequenceClassification.from_pretrained(
+                self.model_name,
+                num_labels=num_labels,
+                ignore_mismatched_sizes=True
+            ).to(self.device)
 
-        # Classification head — used for fine-tuning
-        self._classifier = AutoModelForSequenceClassification.from_pretrained(
-            self.model_name,
-            num_labels=num_labels,
-            ignore_mismatched_sizes=True
-        ).to(self.device)
+        except ValueError as e_model:
+            if "model_type" not in str(e_model):
+                raise
+
+            print(f"[WARN] AutoModel failed for {self.model_name}: {e_model}")
+            print("[INFO] Falling back to BertConfig/BertModel/BertForSequenceClassification.")
+
+            cfg = BertConfig.from_pretrained(self.model_name, num_labels=num_labels)
+
+            self._encoder = BertModel.from_pretrained(
+                self.model_name,
+                config=cfg
+            ).to(self.device)
+
+            self._classifier = BertForSequenceClassification.from_pretrained(
+                self.model_name,
+                config=cfg,
+                ignore_mismatched_sizes=True
+            ).to(self.device)
 
     # Feature extraction
 
